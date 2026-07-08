@@ -344,7 +344,7 @@ class Agent:
                 requires_code_changes
                 and self.config.agent.research_before_code
                 and self.config.security.permission_mode != "read-only"
-                and "Previous attempt errors" not in task
+                and "Build/Test failure" not in task
             ):
                 await self._maybe_auto_research(
                     AutoResearchReason.MANUAL,

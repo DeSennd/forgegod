@@ -1201,7 +1201,20 @@ class RalphLoop:
                 prompt += f"- {learning}\n"
 
         if story.error_log:
-            prompt += "\n## Previous attempt errors (FIX THESE)\n"
+            last_err = story.error_log[-1]
+            # Build/test gate failures just need compiler errors fixed —
+            # no research needed.  Other failures (reviewer, timeout, crash)
+            # may indicate a wrong approach, so research is still warranted.
+            is_build_failure = (
+                last_err.startswith("Build failed")
+                or last_err.startswith("Test failed")
+            )
+            header = (
+                "## Build/Test failure — fix compiler errors (no research needed)"
+                if is_build_failure
+                else "## Previous attempt errors (FIX THESE)"
+            )
+            prompt += f"\n{header}\n"
             for err in story.error_log[-2:]:
                 prompt += f"- {err[:2000]}\n"
 
