@@ -723,6 +723,74 @@ class RalphLoop:
 
         return True
 
+    async def _run_verify_command(
+        self, command: str, story: Story, gate_name: str
+    ) -> bool:
+        """Run a build/test command. Returns True on exit 0, else routes story back to TODO.
+
+        On failure, the story is sent back to TODO with the compiler output
+        (tail-truncated) appended to error_log, so the next coder attempt
+        sees the exact errors.
+        """
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=str(self._workspace_root),
+            )
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=self.config.verify.timeout_s
+            )
+            output = stdout.decode(errors="replace")
+            if proc.returncode != 0:
+                lines = output.splitlines()
+                max_lines = self.config.verify.max_fail_lines
+                tail = lines[-max_lines:] if len(lines) > max_lines else lines
+                truncated = "\n".join(tail)
+                logger.warning(
+                    f"Story [{story.id}] {gate_name} gate FAILED "
+                    f"(exit {proc.returncode})"
+                )
+                story.status = StoryStatus.TODO
+                story.error_log.append(
+                    f"{gate_name.capitalize()} failed (exit {proc.returncode}):\n"
+                    f"{truncated}"
+                )
+                self.prd.learnings.append(
+                    f"[{story.id}] {gate_name.capitalize()} gate failed — "
+                    f"see error_log for compiler output"
+                )
+                self._save_prd()
+                return False
+            logger.info(f"Story [{story.id}] {gate_name} gate passed")
+            return True
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Story [{story.id}] {gate_name} gate timed out "
+                f"after {self.config.verify.timeout_s}s"
+            )
+            story.status = StoryStatus.TODO
+            story.error_log.append(
+                f"{gate_name.capitalize()} command timed out "
+                f"after {self.config.verify.timeout_s}s"
+            )
+            self._save_prd()
+            return False
+        except FileNotFoundError as e:
+            logger.warning(
+                f"Story [{story.id}] {gate_name} gate: "
+                f"command not found — skipping ({e})"
+            )
+            # Don't block on missing toolchain (e.g. cmake not installed)
+            return True
+        except Exception as e:
+            logger.warning(
+                f"Story [{story.id}] {gate_name} gate error, skipping: {e}"
+            )
+            # Don't block on infrastructure errors
+            return True
+
     async def _finalize_story_result(
         self,
         story: Story,
@@ -798,6 +866,20 @@ class RalphLoop:
                     self._save_prd()
                     return
 
+            # ── Build/Test Gate — require compilation success ────────────────
+            if self.config.verify.enabled and self.config.verify.build_command:
+                build_ok = await self._run_verify_command(
+                    self.config.verify.build_command, story, "build"
+                )
+                if not build_ok:
+                    return
+            if self.config.verify.enabled and self.config.verify.test_command:
+                test_ok = await self._run_verify_command(
+                    self.config.verify.test_command, story, "test"
+                )
+                if not test_ok:
+                    return
+            # ── End Build/Test Gate ───────────────────────────────────────────
             # ── Effort Gate ──────────────────────────────────────────────────────
             if self.effort_gate:
                 try:

@@ -67,6 +67,9 @@ VERIFICATION_COMMAND_MARKERS = (
     "yarn lint", "bun run lint", "cargo test", "go test", "deno test",
     "python ", "python3 ", "node ", "php ", "ruby ", "bash ", "sh ",
     "curl ", "wget ", "ping ", "openssl ",
+    # C/C++ build & test tools
+    "cmake", "make ", "ninja", "ctest", "g++", "clang++",
+    "gcc ", "clang ", "meson ", "nasm ",
 )
 PERMISSION_ERROR_MARKERS = (
     "blocked in read-only permission mode",
@@ -247,6 +250,7 @@ class Agent:
         self._gutter_tracker: dict[str, int] = {}  # action_hash -> repeat count
         self._error_solutions_used: list[str] = []  # avoid re-injecting same solution
         self._post_edit_verification_commands: list[str] = []
+        self._last_verification_exit_code: int | None = None  # exit code of last verification bash command
         self._reviewed_final_diff = False
         self._last_write_turn = -1  # turn number of the last write_file/edit_file call
         self._bash_ran_after_last_write = False  # True if bash ran after the last write
@@ -1314,6 +1318,7 @@ class Agent:
 
         if tc.name in {"write_file", "edit_file"}:
             self._post_edit_verification_commands = []
+            self._last_verification_exit_code = None
             self._reviewed_final_diff = False
             self._closure_ready_turns = 0
             self._completion_closeout_prompted = False
@@ -1335,6 +1340,10 @@ class Agent:
             lowered = command.lower()
             if any(marker in lowered for marker in VERIFICATION_COMMAND_MARKERS):
                 self._post_edit_verification_commands.append(command)
+                # Parse exit code from bash output (format: "...\n[exit code: N]")
+                m = re.search(r'\[exit code: (\d+)\]', result.content)
+                if m:
+                    self._last_verification_exit_code = int(m.group(1))
             # Track that bash ran after a write — waives git_diff requirement
             if self._last_write_turn >= 0:
                 self._bash_ran_after_last_write = True
@@ -1428,6 +1437,19 @@ class Agent:
                     "Run at least one meaningful verification command after your last "
                     "code change (tests, lint, build, or typecheck)."
                 )
+
+        # Block completion if the last verification command failed (non-zero exit).
+        # Running a build/test that fails is NOT verification — it's evidence the code is broken.
+        if (
+            self._post_edit_verification_commands
+            and self._last_verification_exit_code is not None
+            and self._last_verification_exit_code != 0
+        ):
+            blockers.append(
+                f"Your last verification command exited with code "
+                f"{self._last_verification_exit_code} — the code is not passing. "
+                f"Fix the build/test failures before completing."
+            )
 
         return blockers
 
