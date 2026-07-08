@@ -746,8 +746,25 @@ class RalphLoop:
             if proc.returncode != 0:
                 lines = output.splitlines()
                 max_lines = self.config.verify.max_fail_lines
-                tail = lines[-max_lines:] if len(lines) > max_lines else lines
-                truncated = "\n".join(tail)
+                # Extract error lines first — compiler errors contain
+                # "error:", "fatal", "undefined reference", etc.  These
+                # are what the agent needs to fix; the surrounding build
+                # progress ("[ 3%] Built target...") is noise.
+                error_patterns = (
+                    "error:", "Error ", "fatal", "undefined reference",
+                    "cannot find", "No rule to make", "CMake Error",
+                    "FAILED:", "collect2:",
+                )
+                error_lines = [
+                    line for line in lines
+                    if any(p in line for p in error_patterns)
+                ]
+                if error_lines:
+                    truncated = "\n".join(error_lines[-max_lines:])
+                else:
+                    # No recognized error pattern — fall back to tail
+                    tail = lines[-max_lines:] if len(lines) > max_lines else lines
+                    truncated = "\n".join(tail)
                 logger.warning(
                     f"Story [{story.id}] {gate_name} gate FAILED "
                     f"(exit {proc.returncode})"
@@ -1186,7 +1203,7 @@ class RalphLoop:
         if story.error_log:
             prompt += "\n## Previous attempt errors (FIX THESE)\n"
             for err in story.error_log[-2:]:
-                prompt += f"- {err[:500]}\n"
+                prompt += f"- {err[:2000]}\n"
 
         # Inject relevant memory for this story
         if self.memory:
