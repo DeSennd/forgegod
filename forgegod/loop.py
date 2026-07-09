@@ -613,12 +613,12 @@ class RalphLoop:
     async def _collect_review_code(self, result, review_code: str | None = None) -> str:
         """Collect the best available code artifact for reviewer analysis."""
         if review_code:
-            return review_code[:6000]
+            return review_code[:12000]
         return await collect_review_artifact(
             self._workspace_root,
             files_changed=result.files_modified,
             fallback_text=result.output,
-            max_chars=6000,
+            max_chars=12000,
         )
 
     async def _current_dirty_files(self) -> set[str]:
