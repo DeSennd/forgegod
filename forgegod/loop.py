@@ -1048,6 +1048,35 @@ class RalphLoop:
                         logger.info(f"Story [{story.id}] pushed to origin/main")
                 except Exception:
                     logger.debug("Auto-push skipped")
+            # ── Phase completion check — generate checklist + stop loop ──────
+            phase = story.id.split('-')[0] if '-' in story.id else None
+            if phase:
+                all_done = all(
+                    s.status in (StoryStatus.DONE, StoryStatus.BLOCKED, StoryStatus.SKIPPED)
+                    for s in self.prd.stories
+                    if s.id.startswith(phase + '-')
+                )
+                has_checklist = (self.config.project_dir / f"checklist_{phase}.xlsx").exists()
+                if all_done and not has_checklist:
+                    import subprocess
+                    checklist_path = self.config.project_dir / f"checklist_{phase}.xlsx"
+                    gen_script = self.config.project_dir.parent / "tests" / "generate_checklist.py"
+                    py_bin = str(self.config.project_dir.parent / ".venv" / "bin" / "python")
+                    try:
+                        subprocess.run(
+                            [py_bin, str(gen_script), phase, "-f", "xlsx",
+                             "-o", str(checklist_path)],
+                            cwd=str(self._workspace_root),
+                            capture_output=True, timeout=10,
+                        )
+                        logger.info(f"Phase {phase} complete — checklist generated: {checklist_path}")
+                    except Exception as e:
+                        logger.warning(f"Could not generate checklist for phase {phase}: {e}")
+                    # Drop killswitch so the loop stops for manual testing
+                    killswitch = self.config.project_dir / "KILLSWITCH"
+                    killswitch.touch()
+                    logger.info(f"Phase {phase} complete — killswitch placed, loop will stop")
+            # ── End phase completion check ───────────────────────────────────────
         else:
             self._handle_story_failure(story, result.error or result.output)
             self._export_story_summary(story, result=result)
