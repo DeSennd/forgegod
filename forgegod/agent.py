@@ -257,6 +257,7 @@ class Agent:
         self._closure_ready_turns = 0
         self._completion_closeout_prompted = False
         self._auto_research_count = 0  # auto-research trigger count
+        self._consecutive_empty_responses = 0  # abort story after 4 in a row
         self._last_denied_tool: str | None = None  # tool name from last permission error
         self._latest_research_brief: ResearchBrief | None = None
 
@@ -402,6 +403,53 @@ class Agent:
                 )
                 self._accumulate_usage(usage)
                 self.budget.record(usage, role=self.role)
+
+                # Detect consecutive empty responses — the model may be "giving up"
+                # on a context it can't handle. After 4 in a row, abort the story
+                # so it gets a fresh agent instead of looping with poisoned context.
+                if not response_text or not response_text.strip():
+                    self._consecutive_empty_responses += 1
+                    logger.warning(
+                        "Empty model response (%d consecutive), turn=%d",
+                        self._consecutive_empty_responses, self._turn,
+                    )
+                    if self._consecutive_empty_responses >= 4:
+                        logger.warning(
+                            "Aborting story after %d consecutive empty responses",
+                            self._consecutive_empty_responses,
+                        )
+                        failed = self._build_result(
+                            success=False,
+                            output=(
+                                "[Agent aborted: model returned empty responses "
+                                f"{self._consecutive_empty_responses} times in a row. "
+                                "Story will retry with a fresh agent.]"
+                            ),
+                            elapsed=time.time() - start,
+                            error="consecutive empty responses",
+                        )
+                        await self._emit_event(
+                            "task_failed",
+                            error=failed.error,
+                            output=failed.output,
+                        )
+                        await self._record_episode(task_id, task, failed)
+                        return failed
+                    # Add a minimal message so the conversation can continue
+                    self.messages.append({
+                        "role": "assistant",
+                        "content": "",
+                    })
+                    self.messages.append({
+                        "role": "user",
+                        "content": (
+                            "[The model returned an empty response. "
+                            "Please continue working on the task.]"
+                        ),
+                    })
+                    continue
+                else:
+                    self._consecutive_empty_responses = 0
 
                 # BUG #1 FIX: Preserve <think> tags in message history for MiniMax M2.7.
                 # MiniMax uses <think> blocks for chain-of-thought. Stripping them before
